@@ -3,39 +3,31 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph
 from IPython.display import Image, display
-from TTS.api import TTS
-from simpleaudio import WaveObject
 from dotenv import load_dotenv
-from os import sync
 import json
 import random
+import subprocess
 
 QUESTION_BANKS_FILEPATH = "questions.json"
 SPEAKER_FILEPATH = "output.wav"
 
 ASK_QUESTIONS: str = (
     "Identity: You are an interviewer named Lucas for the US citizenship interview at the USCIS.\n\n"
-    "Role:\n"
-    "Conduct the interview.\n\n"
+    "Role: Conduct the interview.\n\n"
+
     "You will be given:\n"
     "- Interviewee's name\n"
-    "- Current question's index\n"
-    "- Current question\n"
-    "- Previous question could be None\n"
-    "- Interviewee's answer to previous question (could be None)\n"
-    "- Correct answer to previous question (could be None)\n"
-    "- Did they get previous answer right? (could be None)\n\n"
+    "- Question's index\n"
+    "- Question\n"
+
     "Rules:\n"
-    "- If this is the first question (question's index = 0), then\n"
+    "- If this is the first question (index = 0), then\n"
     "       - Greet the interviewee, introduce yourself.\n" 
     "       - Ask the question.\n"
-    "- If this is the second question onward (question's index > 0), then\n"
-    "       - Continue the interview without any greeting, welcome"
-    "       - Give short feedback on the previous question, guide:\n"
-    "           - If they got it right, say that their answer is correct.\n"
-    "           - Otherwise, compare their question with correct one (using previous question if you want) in ONE or TWO sentences.\n"
-    "       - Move on and ask the question.\n"
-    "- You can paraphrase the question for slight challenge, without changing meaning.\n"
+    "- If this is the second question onward (index > 0), then\n"
+    "       - Continue the interview without any greeting, welcoming"
+    "       - Move on an ask the question.\n"
+    "- You can paraphrase the question for slight to medium challenge, without changing meaning.\n"
     "- Be professional, and human natural.\n"
     "- Speak directly to the interviewee.\n"
     "- Do NOT add any information beyond what is required.\n"
@@ -45,41 +37,51 @@ ASK_QUESTIONS: str = (
 
 CONCLUDE_INTERVIEW = (
     "Identity: You are an interviewer named Lucas for the US citizenship interview at the USCIS.\n\n"
-    "Role:\n"
-    "Announce the interview result and conclude.\n\n"
+    "Role: Announce the interview result and conclude.\n\n"
+
     "You will be given:\n"
     "- Interviewee's name\n"
     "- Do they pass interview?\n"
     "- Number of correct answers\n\n"
+
     "Rules:\n"
     "- Tell the interviewee how many questions they answered correctly and if they passed the interview or not.\n"
     "- If the interviewee passed, then\n"
     "       - Congratulate them on passing.\n"
     "       - Tell them to wait for schedule of ceremony.\n"
+    "       - Be happy, and exciting.\n"
     "- If the interviewee failed, then\n"
     "       - Encourage them to do better next time.\n"
     "       - Be motivating, and empathetic.\n"
     "- End with a short farewell.\n"
-    "- Be concise and professional but human natural.\n"
+    "- Be professional, and human natural.\n"
     "- Speak directly to the interviewee.\n"
     "- Do NOT ask any questions.\n"
 )
 
 
 EVALUATE_ANSWER = (
-    "Identity: You are a strict grader for a U.S. citizenship interview.\n\n"
+    "Identity: You are an interviewer named Lucas for the US citizenship interview at the USCIS.\n\n"
+    "Role: Evaluate the answer of the interviewee given the question and correct standard answer.\n\n"
+
     "You will be given:\n"
     "- Question"
     "- Interviewee's answer"
     "- Correct answer\n\n"
+
     "Rules:\n"
-    "- Compare the interviewee's answer to the correct answer.\n"
     "- Accept paraphrases and synonyms.\n"
-    "- Reject answers that are factually incorrect or incomplete.\n"
-    "- Do NOT explain your reasoning.\n"
-    "- Do NOT add any extra text.\n\n"
-    "Output format:\n"
-    "Respond with exactly one word: YES or NO\n"
+    "- Reject answers that are FACTUALLY INCORRECT or INCOMPLETE.\n"
+    "- Give short feedback on the previous question, guide:\n"
+    "   - If they got it right, say that their answer is correct.\n"
+    "   - Otherwise, compare their question with correct one (using previous question if you want) in MAX 2 SENTENCES.\n"
+    "- Compare the interviewee's answer to the correct answer.\n"
+    "- Be professional, and human natural.\n"
+    "- Do NOT explain your reasoning beyond what is required.\n"
+    "- Do NOT say anything beyond the feedback, so work solely on the feedback."
+
+    "Output format (REQUIRED): Return string in strictly format as shown below, no extra text.\n"
+    "{\"correct\": <true or false>, \"feedback\": <The feedback you have to give>}\n"
 )
 
 
@@ -90,16 +92,14 @@ class Question(TypedDict):
 
 class InterviewState(TypedDict):
     """State of the interview during the process"""
-    name: str
+    user_name: str
     # Initialized during setup
     questions: Optional[list[Question]]
     cur_index: Optional[int]
     num_correct: Optional[int]
 
     # Update during interview
-    prev_answer: Optional[str]
-    prev_correct_answer: Optional[str]
-    prev_answer_eval: Optional[bool]
+    prev_answer: Optional[str] # The answer to the previous question
     pass_interview: Optional[bool]
 
 
@@ -108,42 +108,26 @@ load_dotenv()
 print("Init the LLM and TTS...")
 gemini_flash_lite = ChatGoogleGenerativeAI(
     model="gemini-2.0-flash-lite", 
-    temperature=0.5, 
+    temperature=0.4, 
     max_retries=2
-)
-tts = TTS(
-    model_name="tts_models/multilingual/multi-dataset/xtts_v2",
-    progress_bar=True, 
-    gpu=False
 )
 print("Init the LLM and TTS successfully!")
 
-# TODO: Fix the segmentation fault that happens
 def speak(content: str) -> None:
     """Agent speaks the content"""
     # Convert the content to the speech file
     try:
         # Print for testing
         print(f"Interviewer says: {content}")
-        tts.tts_to_file(
-            text=content,
-            speaker=tts.speakers[0],
-            language="en",
-            file_path=SPEAKER_FILEPATH
-        )
-        
-        sync()
-
-        # Execute speech file
-        wave_obj = WaveObject.from_wave_file(SPEAKER_FILEPATH)
-        play_obj = wave_obj.play()
-        play_obj.wait_done()
+        # Only native OS devices, unfortunately
+        subprocess.run(["say", content])
     except Exception as e:
         print(e)
         raise RuntimeError("Lucas has a problem speaking")
     
 
 def convert_to_text() -> str:
+    """Record the user's response and convert to text"""
     return ""
 
 
@@ -170,9 +154,6 @@ def setup_interview(state: InterviewState) -> InterviewState:
     # Initialize default values for the state
     state["cur_index"] = 0
     state["num_correct"] = 0
-    state["prev_answer"] = None
-    state["prev_answer_eval"] = None
-    state["prev_correct_answer"] = None
 
     return state
 
@@ -184,32 +165,20 @@ def ask_questions(state: InterviewState) -> InterviewState:
     system_prompt = SystemMessage(
         content=ASK_QUESTIONS
     )
-    index = state["cur_index"]
-    prev_q = (
-        state["questions"][index-1]["content"] if index > 0
-        else None
-    )
     state_prompt = HumanMessage(
         content=(
-            f"""Interviewee's name: {state["name"]},"""
-            f"""Current question's index: {index},"""
-            f"""Current question: {state["questions"][index]["content"]},"""
-            f"""Previous question: {prev_q},"""
-            f"""Interviewee's answer to previous question: {state["prev_answer"]},"""
-            f"""Correct answer to previous question: {state["prev_correct_answer"]},"""
-            f"""Did they get previous answer right?: {state["prev_answer_eval"]}."""
+            f"""Interviewee's name: {state["user_name"]},"""
+            f"""Question's index: {state["cur_index"]},"""
+            f"""Question: {state["questions"][state["cur_index"]]["content"]},"""
         )
     )
     response = gemini_flash_lite.invoke([system_prompt, state_prompt])
-    print(response.content)
+    speak(response.content)
     return state
 
 
 def wait_user_response(state: InterviewState) -> InterviewState:
-    """
-    Wait for the user's response.
-    """
-    # The answer of current question is saved to prev_answer
+    """Wait for the user's response"""
     state["prev_answer"] = input("Enter your answer here: ")
     return state
 
@@ -219,7 +188,7 @@ def evaluate_answers(state: InterviewState) -> InterviewState:
     system_prompt = SystemMessage(
         content=EVALUATE_ANSWER
     )
-    question = state["questions"][state["cur_index"]]
+    question: Question = state["questions"][state["cur_index"]]
     state_prompt = HumanMessage(
         content=(
             f"""Question: {question["content"]},"""
@@ -228,38 +197,38 @@ def evaluate_answers(state: InterviewState) -> InterviewState:
         )
     )
     response = gemini_flash_lite.invoke([system_prompt, state_prompt])
+    # Load the JSON-format text response to an actual JSON
+    try:
+        json_response = json.loads(response.content)
+    except Exception as e:
+        raise RuntimeError("Failed to process the LLM response.")
 
-    state["prev_correct_answer"] = question["answer"]
-    if response.content == "YES":
-        state["prev_answer_eval"] = True
+    # Update the interview state after evaluation
+    if json_response["correct"]:
         state["num_correct"] += 1
-    else:
-        state["prev_answer_eval"] = False
 
     # Move to next question
     state["cur_index"] += 1
+
     if state["num_correct"] >= 6:
         # Answering at least 6 questions correctly means passing
         state["pass_interview"] = True
+    elif (
+        # Number of correct answers and number of questions left
+        state["num_correct"] + 
+        (len(state["questions"]) - state["cur_index"]) < 6
+    ):
+        state["pass_interview"]  = False
 
+    speak(json_response["feedback"])
     return state
 
 
 def should_continue_interview(state: InterviewState) -> InterviewState:
-    """
-    Conditional node:
-    Determine if agent continues interview after evaluation.
-    """
-    if state["num_correct"] < 6:
-        num_q_left: int = len(state["questions"]) - state["cur_index"] 
-        if state["num_correct"] + num_q_left >= 6:
-            # There are enough questions left, user still has a chance to pass
-            return "continue_interview"
-        else:
-            # User is cooked
-            state["pass_interview"] = False
-            return "end_interview"
-
+    """Determine if agent continues after evaluation"""
+    if "pass_interview" not in state:
+        return "continue_interview"
+    
     return "end_interview"
 
 
@@ -270,13 +239,13 @@ def conclude_interview(state: InterviewState) -> InterviewState:
     )
     state_prompt = HumanMessage(
         content=(
-            f"""Interviewee's name: {state["name"]}"""
+            f"""Interviewee's name: {state["user_name"]},"""
             f"""Do they pass interview?: {state["pass_interview"]},"""
             f"""Number of correct answers: {state["num_correct"]}."""
         )
     )
     response = gemini_flash_lite.invoke([system_prompt, state_prompt])
-    print(response.content)
+    speak(response.content)
 
     return state
 
@@ -318,17 +287,18 @@ def visualize_graph(compiled_graph) -> None:
 def conduct_interview(compiled_graph, interviewee_name: str) -> None:
     """Run the interview"""
     compiled_graph.invoke({
-        "name": interviewee_name
+        "user_name": interviewee_name
     })
 
 if __name__ == "__main__":
     try:
         compiled_graph = construct_graph()
-        # visualize_graph(compiled_graph)
+        #visualize_graph(compiled_graph)
 
         # Start running the interview
         conduct_interview(
-            compiled_graph, interviewee_name=input("Enter you name: ")
+            compiled_graph, 
+            interviewee_name=input("Enter you name: ")
         )
     except Exception as e:
         print("INTERVIEW_INTERRUPTION!")
