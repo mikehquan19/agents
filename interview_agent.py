@@ -22,11 +22,11 @@ ASK_QUESTIONS: str = (
 
     "Rules:\n"
     "- If this is the first question (index = 0), then\n"
-    "       - Greet the interviewee, introduce yourself.\n" 
+    "       - Greet the interviewee by their name, introduce yourself.\n" 
     "       - Ask the question.\n"
     "- If this is the second question onward (index > 0), then\n"
     "       - Continue the interview without any greeting, welcoming"
-    "       - Don't call people's name so frequently since it could be irritating (But still have to call)"
+    "       - Don't call people's name so frequently since it could be irritating (But still call sometimes)"
     "       - Move on an ask the question.\n"
     "- You can paraphrase the question for slight to medium challenge, without changing meaning.\n"
     "- Be professional, and human natural.\n"
@@ -117,20 +117,12 @@ print("Init the LLM and TTS successfully!")
 
 def speak(content: str) -> None:
     """Agent speaks the content"""
-    # Convert the content to the speech file
     try:
-        # Print for testing
         print(f"Interviewer says: {content}")
         # Only native OS devices, unfortunately
-        subprocess.run([
-            "say",
-            "-v", "Alex",
-            "-r", "180",
-            content
-        ])
+        subprocess.run(["say", content])
     except Exception as e:
-        print(e)
-        raise RuntimeError("Lucas has a problem speaking")
+        raise RuntimeError(e)
     
 
 def convert_to_text() -> str:
@@ -150,7 +142,6 @@ def setup_interview(state: InterviewState) -> InterviewState:
                 range(0, len(question_banks)), 
                 10
             )
-
             for index in indices:
                 state["questions"].append(question_banks[index])
     except FileNotFoundError:
@@ -207,26 +198,26 @@ def evaluate_answers(state: InterviewState) -> InterviewState:
     # Load the JSON-format text response to an actual JSON
     try:
         json_response = json.loads(response.content)
+        
+        # Update the interview state after evaluation
+        if json_response["correct"]:
+            state["num_correct"] += 1
+
+        # Move to next question
+        state["cur_index"] += 1
+
+        if state["num_correct"] >= 6:
+            # Got at least 6 questions means passing
+            state["pass_interview"] = True
+        elif (
+            # Number of correct answers and questions left
+            state["num_correct"] + 
+            (len(state["questions"]) - state["cur_index"]) < 6
+        ):
+            state["pass_interview"]  = False
     except Exception as e:
         raise RuntimeError("Failed to process the LLM response.")
-
-    # Update the interview state after evaluation
-    if json_response["correct"]:
-        state["num_correct"] += 1
-
-    # Move to next question
-    state["cur_index"] += 1
-
-    if state["num_correct"] >= 6:
-        # Answering at least 6 questions correctly means passing
-        state["pass_interview"] = True
-    elif (
-        # Number of correct answers and number of questions left
-        state["num_correct"] + 
-        (len(state["questions"]) - state["cur_index"]) < 6
-    ):
-        state["pass_interview"]  = False
-
+    
     speak(json_response["feedback"])
     return state
 
