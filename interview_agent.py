@@ -26,6 +26,7 @@ ASK_QUESTIONS: str = (
     "       - Ask the question.\n"
     "- If this is the second question onward (index > 0), then\n"
     "       - Continue the interview without any greeting, welcoming"
+    "       - Don't call people's name so frequently since it could be irritating (But still have to call)"
     "       - Move on an ask the question.\n"
     "- You can paraphrase the question for slight to medium challenge, without changing meaning.\n"
     "- Be professional, and human natural.\n"
@@ -45,6 +46,7 @@ CONCLUDE_INTERVIEW = (
     "- Number of correct answers\n\n"
 
     "Rules:\n"
+    "- Don't greet or introduce. You are continuing the conversation."
     "- Tell the interviewee how many questions they answered correctly and if they passed the interview or not.\n"
     "- If the interviewee passed, then\n"
     "       - Congratulate them on passing.\n"
@@ -120,7 +122,12 @@ def speak(content: str) -> None:
         # Print for testing
         print(f"Interviewer says: {content}")
         # Only native OS devices, unfortunately
-        subprocess.run(["say", content])
+        subprocess.run([
+            "say",
+            "-v", "Alex",
+            "-r", "180",
+            content
+        ])
     except Exception as e:
         print(e)
         raise RuntimeError("Lucas has a problem speaking")
