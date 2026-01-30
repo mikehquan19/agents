@@ -8,8 +8,6 @@ class AgentState(TypedDict):
     questions: list[dict[str, str]] # [{content: "", answer: ""}]
     next_index: int # Index of the next question to ask
     num_correct: int # Number of correct questions user got right
-    last_answer: Optional[str] # User's answer to the last question asked
-    last_answer_eval: Optional[bool] # If the answer is correct
     pass_interview: Optional[bool] # If user passed the interview
 ```
 

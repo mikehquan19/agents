@@ -9,10 +9,10 @@ import random
 import subprocess
 
 QUESTION_BANKS_FILEPATH = "questions.json"
-SPEAKER_FILEPATH = "output.wav"
+ANSWER_FILEPATH = "user_input.wav"
 
 ASK_QUESTIONS: str = (
-    "Identity: You are an interviewer named Lucas for the US citizenship interview at the USCIS.\n\n"
+    "Identity: You are an interviewer named Lucile for the US citizenship interview at the USCIS.\n\n"
     "Role: Conduct the interview.\n\n"
 
     "You will be given:\n"
@@ -28,7 +28,7 @@ ASK_QUESTIONS: str = (
     "       - Continue the interview without any greeting, welcoming"
     "       - Don't call people's name so frequently since it could be irritating (But still call sometimes)"
     "       - Move on an ask the question.\n"
-    "- You can paraphrase the question for slight to medium challenge, without changing meaning.\n"
+    "- You can paraphrase the question for slight challenge, without changing meaning.\n"
     "- Be professional, and human natural.\n"
     "- Speak directly to the interviewee.\n"
     "- Do NOT add any information beyond what is required.\n"
@@ -37,7 +37,7 @@ ASK_QUESTIONS: str = (
 
 
 CONCLUDE_INTERVIEW = (
-    "Identity: You are an interviewer named Lucas for the US citizenship interview at the USCIS.\n\n"
+    "Identity: You are an interviewer named Lucile for the US citizenship interview at the USCIS.\n\n"
     "Role: Announce the interview result and conclude.\n\n"
 
     "You will be given:\n"
@@ -63,7 +63,7 @@ CONCLUDE_INTERVIEW = (
 
 
 EVALUATE_ANSWER = (
-    "Identity: You are an interviewer named Lucas for the US citizenship interview at the USCIS.\n\n"
+    "Identity: You are an interviewer named Lucile for the US citizenship interview at the USCIS.\n\n"
     "Role: Evaluate the answer of the interviewee given the question and correct standard answer.\n\n"
 
     "You will be given:\n"
@@ -87,7 +87,6 @@ EVALUATE_ANSWER = (
 )
 
 
-# DEFINE THE GRAPH
 class Question(TypedDict):
     content: str
     answer: str
@@ -106,31 +105,60 @@ class InterviewState(TypedDict):
 
 
 load_dotenv()
-# Initialize the LLM and TTS model
-print("Init the LLM and TTS...")
+# Initialize the LLM and Whisper model
+print("Init the LLM and Whisper...")
 gemini_flash_lite = ChatGoogleGenerativeAI(
     model="gemini-2.0-flash-lite", 
-    temperature=0.4, 
+    temperature=0.3, 
     max_retries=2
 )
-print("Init the LLM and TTS successfully!")
+print("Init the LLM and Whisper successfully!")
 
+
+# CONVERSATIONAL TOOLS
 def speak(content: str) -> None:
     """Agent speaks the content"""
     try:
-        print(f"Interviewer says: {content}")
         # Only native OS devices, unfortunately
-        subprocess.run(["say", content])
+        print(f"Interviewer says: {content}")
+        subprocess.run([
+            "say",
+            "-r", "120",
+            content
+        ])
     except Exception as e:
         raise RuntimeError(e)
     
 
-def convert_to_text() -> str:
-    """Record the user's response and convert to text"""
-    return ""
+def convert_to_answer() -> str:
+    # Record the for 10 seconds.
+    # After 10 seconds, candidate is considered not knowing the answer
+    subprocess.run([
+        "ffmpeg",
+        "-y",
+        "-f", "avfoundation",
+        "-i", ":0", # The Macbook recording
+        "-t", "10",
+        "-ar", "16000",
+        "-ac", "1",
+        ANSWER_FILEPATH
+    ])
+    # Inference from the Whisper model 
+    subprocess.run([
+        "./whisper.cpp/build/bin/whisper-cli",
+        "-m", "whisper.cpp/models/ggml-base.en.bin",
+        "-f", ANSWER_FILEPATH,
+        "-otxt"
+    ], check=True)
+
+    with open(f"{ANSWER_FILEPATH}.txt") as f:
+        user_answer: str = f.read().strip()
+
+    print(f"User said: {user_answer}")
+    return user_answer
 
 
-# DEFINE NODES
+# DEFINE GRAPH NODES
 def setup_interview(state: InterviewState) -> InterviewState:
     """Setup the interview"""
     # Load memory from file
@@ -158,26 +186,27 @@ def setup_interview(state: InterviewState) -> InterviewState:
 
 def ask_questions(state: InterviewState) -> InterviewState:
     """LLM to conduct interview and ask next question"""
+    print("Interview state:")
     print(json.dumps(state, indent=2))
 
     system_prompt = SystemMessage(
         content=ASK_QUESTIONS
     )
-    state_prompt = HumanMessage(
+    pass_state_prompt = HumanMessage(
         content=(
             f"""Interviewee's name: {state["user_name"]},"""
             f"""Question's index: {state["cur_index"]},"""
             f"""Question: {state["questions"][state["cur_index"]]["content"]},"""
         )
     )
-    response = gemini_flash_lite.invoke([system_prompt, state_prompt])
+    response = gemini_flash_lite.invoke([system_prompt, pass_state_prompt])
     speak(response.content)
     return state
 
 
 def wait_user_response(state: InterviewState) -> InterviewState:
     """Wait for the user's response"""
-    state["prev_answer"] = input("Enter your answer here: ")
+    state["prev_answer"] = convert_to_answer()
     return state
 
 
@@ -187,14 +216,14 @@ def evaluate_answers(state: InterviewState) -> InterviewState:
         content=EVALUATE_ANSWER
     )
     question: Question = state["questions"][state["cur_index"]]
-    state_prompt = HumanMessage(
+    pass_state_prompt = HumanMessage(
         content=(
             f"""Question: {question["content"]},"""
             f"""Interviewee's answer: {state["prev_answer"]},"""
             f"""Correct answer: {question["answer"]}."""
         )
     )
-    response = gemini_flash_lite.invoke([system_prompt, state_prompt])
+    response = gemini_flash_lite.invoke([system_prompt, pass_state_prompt])
     # Load the JSON-format text response to an actual JSON
     try:
         json_response = json.loads(response.content)
@@ -210,10 +239,10 @@ def evaluate_answers(state: InterviewState) -> InterviewState:
             # Got at least 6 questions means passing
             state["pass_interview"] = True
         elif (
-            # Number of correct answers and questions left
             state["num_correct"] + 
             (len(state["questions"]) - state["cur_index"]) < 6
         ):
+            # User less than 6 questions and ran out of questions
             state["pass_interview"]  = False
     except Exception as e:
         raise RuntimeError("Failed to process the LLM response.")
@@ -235,14 +264,14 @@ def conclude_interview(state: InterviewState) -> InterviewState:
     system_prompt = SystemMessage(
         content=CONCLUDE_INTERVIEW
     )
-    state_prompt = HumanMessage(
+    pass_state_prompt = HumanMessage(
         content=(
             f"""Interviewee's name: {state["user_name"]},"""
             f"""Do they pass interview?: {state["pass_interview"]},"""
             f"""Number of correct answers: {state["num_correct"]}."""
         )
     )
-    response = gemini_flash_lite.invoke([system_prompt, state_prompt])
+    response = gemini_flash_lite.invoke([system_prompt, pass_state_prompt])
     speak(response.content)
 
     return state
