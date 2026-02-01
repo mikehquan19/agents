@@ -71,21 +71,32 @@ EVALUATE_ANSWER = (
     "You will be given:\n"
     "- Question"
     "- Interviewee's answer"
-    "- Correct answer\n\n"
+    "- Correct answer\n"
+    "- Repeat times\n\n"
 
     "Rules:\n"
-    "- Accept paraphrases and synonyms.\n"
-    "- Reject answers that are incorrect. However, be slightly lenient\n"
-    "- Give short feedback, guide:\n"
-    "   - If they got it right, say that their answer is correct.\n"
-    "   - Otherwise, compare their question with correct one using question as context in MAX 2 SENTENCES.\n"
-    "- Compare the interviewee's answer to the correct answer.\n"
+    "- If the user asks you to repeat, then\n"
+    "   - If repeat times < 2, then\n"
+    "       - In the feedback, say that you will repeat the question.\n"
+    "   - Else,\n"
+    "       - Mark this as an incorrect answer (NO).\n"
+    "       - In the feedback, say that you can't repeat and have to move on.\n"
+    "- Else, then\n"
+    "   - Compare the interviewee's answer to the correct answer.\n"
+    "   - Accept paraphrases and synonyms.\n"
+    "   - Reject answers that are incorrect. However, be slightly lenient\n"
+    "   - Give short feedback, guide:\n"
+    "       - If they got it right, say that their answer is correct.\n"
+    "       - Otherwise, state the comparison from rule 1 using question as context in MAX 2 SENTENCES.\n"
     "- Be professional, and human natural.\n"
     "- Do NOT explain your reasoning beyond what is required.\n"
     "- Do NOT say anything beyond the feedback.\n"
 
     "Output format (REQUIRED): Return string in strictly format as shown below, no extra text.\n"
-    "{\"correct\": <true or false>, \"feedback\": <The feedback you have to give as a STRING WITH DOUBLE QUOTED>}\n"
+    "{"
+        "\"eval\": <\"YES\", \"NO\", or \"REPEAT\">, "
+        "\"feedback\": <The feedback you give as a STRING WITH DOUBLE QUOTED>"
+    "}\n"
 )
 
 
@@ -100,7 +111,7 @@ class InterviewState(TypedDict):
     questions: list[Question]
     cur_index: int
     num_correct: int
-    repeat: bool # Whether the LLM repeats the question
+    repeat_times: int
 
     # Update during interview
     prev_answer: Optional[str] # The answer to the previous question
@@ -181,7 +192,7 @@ def setup_interview(state: InterviewState) -> InterviewState:
     # Initialize default values for the state
     state["cur_index"] = 0
     state["num_correct"] = 0
-    state["repeat"] = False
+    state["repeat_times"] = 0
 
     return state
 
@@ -196,9 +207,9 @@ def ask_questions(state: InterviewState) -> InterviewState:
     )
     pass_state_prompt = HumanMessage(
         content=(
-            f"""Interviewee's name: {state["user_name"]},"""
-            f"""Question's index: {state["cur_index"]},"""
-            f"""Question: {state["questions"][state["cur_index"]]["content"]},"""
+            f"Interviewee's name: {state["user_name"]},"
+            f"Question's index: {state["cur_index"]},"
+            f"Question: {state["questions"][state["cur_index"]]["content"]}."
         )
     )
     response = gemini_flash_lite.invoke([system_prompt, pass_state_prompt])
@@ -220,9 +231,10 @@ def evaluate_answers(state: InterviewState) -> InterviewState:
     question: Question = state["questions"][state["cur_index"]]
     pass_state_prompt = HumanMessage(
         content=(
-            f"""Question: {question["content"]},"""
-            f"""Interviewee's answer: {state["prev_answer"]},"""
-            f"""Correct answer: {question["answer"]}."""
+            f"Question: {question["content"]},"
+            f"Interviewee's answer: {state["prev_answer"]},"
+            f"Correct answer: {question["answer"]}."
+            f"Repeat times: {state["repeat_times"]}"
         )
     )
     response = gemini_flash_lite.invoke([system_prompt, pass_state_prompt])
@@ -231,21 +243,26 @@ def evaluate_answers(state: InterviewState) -> InterviewState:
         json_response = json.loads(response.content)
         
         # Update the interview state after evaluation
-        if json_response["correct"]:
-            state["num_correct"] += 1
+        if json["eval"] == "REPEAT" and state["repeat_times"] < 2:
+            state["repeat_times"] += 1
+        else:
+            if json_response["eval"] == "YES":
+                state["num_correct"] += 1
 
-        # Move to next question
-        state["cur_index"] += 1
+            # Move to next question
+            state["cur_index"] += 1
 
-        if state["num_correct"] >= 6:
-            # Answering at least 6 questions correctly means passing
-            state["pass_interview"] = True
-        elif (
-            state["num_correct"] + 
-            (len(state["questions"]) - state["cur_index"]) < 6
-        ):
-            # Got less than 6 questions and ran out of questions, means failing
-            state["pass_interview"]  = False
+            if state["num_correct"] >= 6:
+                # Answering at least 6 questions correctly means passing
+                state["pass_interview"] = True
+            else:
+                num_left = len(state["questions"]) - state["cur_index"]
+                if state["num_correct"] + num_left < 6:
+                    # Run out of questions with < 6 correct answers, means failing
+                    state["pass_interview"] = False
+
+            # Reset the times of repeat for next question
+            state["repeat_times"] = 0
     except Exception as e:
         print(f"Response: {response.content}")
         raise RuntimeError(f"Failed to process the LLM response.\n{e}")
@@ -269,9 +286,9 @@ def conclude_interview(state: InterviewState) -> InterviewState:
     )
     pass_state_prompt = HumanMessage(
         content=(
-            f"""Interviewee's name: {state["user_name"]},"""
-            f"""Do they pass interview?: {state["pass_interview"]},"""
-            f"""Number of correct answers: {state["num_correct"]}."""
+            f"Interviewee's name: {state["user_name"]},"
+            f"Do they pass interview?: {state["pass_interview"]},"
+            f"Number of correct answers: {state["num_correct"]}."
         )
     )
     response = gemini_flash_lite.invoke([system_prompt, pass_state_prompt])
