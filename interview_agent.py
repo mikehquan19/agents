@@ -249,20 +249,18 @@ def evaluate_answers(state: InterviewState) -> InterviewState:
             if json_response["eval"] == "YES":
                 state["num_correct"] += 1
 
-            # Move to next question
+            # Move to next question and reset the repeat times for next question
             state["cur_index"] += 1
+            state["repeat_times"] = 0
 
             if state["num_correct"] >= 6:
-                # Answering at least 6 questions correctly means passing
+                # Answering >= 6 questions correctly means passing
                 state["pass_interview"] = True
             else:
                 num_left = len(state["questions"]) - state["cur_index"]
                 if state["num_correct"] + num_left < 6:
                     # Run out of questions with < 6 correct answers, means failing
                     state["pass_interview"] = False
-
-            # Reset the times of repeat for next question
-            state["repeat_times"] = 0
     except Exception as e:
         print(f"Response: {response.content}")
         raise RuntimeError(f"Failed to process the LLM response.\n{e}")
