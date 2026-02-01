@@ -25,12 +25,14 @@ ASK_QUESTIONS: str = (
     "       - Greet the interviewee by their name, introduce yourself.\n" 
     "       - Ask the question.\n"
     "- If this is the second question onward (index > 0), then\n"
-    "       - Continue the interview without any greeting, welcoming"
-    "       - Don't call people's name so frequently since it could be irritating (But still call sometimes)"
+    "       - Continue the interview without any greeting"
+    "       - Don't call people's name so frequently since it can be irritating (But still call sometimes)"
     "       - Move on an ask the question.\n"
-    "- You can paraphrase the question for slight challenge, without changing meaning.\n"
+    "- State the ordering of question based on index (order = index + 1). "
+    "For example, index = 3 means 'question 4' or 'fourth question'.\n"
     "- Be professional, and human natural.\n"
     "- Speak directly to the interviewee.\n"
+    "- Do NOT paraphrase the question.\n"
     "- Do NOT add any information beyond what is required.\n"
     "- Do NOT add any hint.\n"
 )
@@ -73,8 +75,8 @@ EVALUATE_ANSWER = (
 
     "Rules:\n"
     "- Accept paraphrases and synonyms.\n"
-    "- Reject answers that are FACTUALLY INCORRECT or INCOMPLETE.\n"
-    "- Give short feedback on the previous question, guide:\n"
+    "- Reject answers that are incorrect based on the correct answer and question. However, be lenient\n"
+    "- Give short feedback, guide:\n"
     "   - If they got it right, say that their answer is correct.\n"
     "   - Otherwise, compare their question with correct one (using previous question if you want) in MAX 2 SENTENCES.\n"
     "- Compare the interviewee's answer to the correct answer.\n"
@@ -83,7 +85,7 @@ EVALUATE_ANSWER = (
     "- Do NOT say anything beyond the feedback, so work solely on the feedback."
 
     "Output format (REQUIRED): Return string in strictly format as shown below, no extra text.\n"
-    "{\"correct\": <true or false>, \"feedback\": <The feedback you have to give>}\n"
+    "{\"correct\": <true or false>, \"feedback\": <The feedback you have to give as a STRING WITH DOUBLE QUOTED>}\n"
 )
 
 
@@ -121,11 +123,7 @@ def speak(content: str) -> None:
     try:
         # Only native OS devices, unfortunately
         print(f"Interviewer says: {content}")
-        subprocess.run([
-            "say",
-            "-r", "120",
-            content
-        ])
+        subprocess.run(["say", "-r", "110", content])
     except Exception as e:
         raise RuntimeError(e)
     
@@ -143,7 +141,7 @@ def convert_to_answer() -> str:
         "-ac", "1",
         ANSWER_FILEPATH
     ])
-    # Inference from the Whisper model 
+    # Inference from the Whisper model
     subprocess.run([
         "./whisper.cpp/build/bin/whisper-cli",
         "-m", "whisper.cpp/models/ggml-base.en.bin",
@@ -224,8 +222,8 @@ def evaluate_answers(state: InterviewState) -> InterviewState:
         )
     )
     response = gemini_flash_lite.invoke([system_prompt, pass_state_prompt])
-    # Load the JSON-format text response to an actual JSON
     try:
+        # Load the JSON-format text response to an actual JSON
         json_response = json.loads(response.content)
         
         # Update the interview state after evaluation
@@ -245,6 +243,7 @@ def evaluate_answers(state: InterviewState) -> InterviewState:
             # User less than 6 questions and ran out of questions
             state["pass_interview"]  = False
     except Exception as e:
+        print(F"Response: {response.content}")
         raise RuntimeError("Failed to process the LLM response.")
     
     speak(json_response["feedback"])
