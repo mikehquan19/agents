@@ -26,7 +26,7 @@ ASK_QUESTIONS: str = (
     "       - Ask the question.\n"
     "- If this is the second question onward (index > 0), then\n"
     "       - Continue the interview without any greeting"
-    "       - Don't call people's name so frequently since it can be irritating (But still call sometimes)"
+    "       - Don't call people's name so frequently since it can be irritating, but still call sometimes"
     "       - Move on an ask the question.\n"
     "- State the ordering of question based on index (order = index + 1). "
     "For example, index = 3 means 'question 4' or 'fourth question'.\n"
@@ -75,14 +75,14 @@ EVALUATE_ANSWER = (
 
     "Rules:\n"
     "- Accept paraphrases and synonyms.\n"
-    "- Reject answers that are incorrect based on the correct answer and question. However, be lenient\n"
+    "- Reject answers that are incorrect. However, be slightly lenient\n"
     "- Give short feedback, guide:\n"
     "   - If they got it right, say that their answer is correct.\n"
-    "   - Otherwise, compare their question with correct one (using previous question if you want) in MAX 2 SENTENCES.\n"
+    "   - Otherwise, compare their question with correct one using question as context in MAX 2 SENTENCES.\n"
     "- Compare the interviewee's answer to the correct answer.\n"
     "- Be professional, and human natural.\n"
     "- Do NOT explain your reasoning beyond what is required.\n"
-    "- Do NOT say anything beyond the feedback, so work solely on the feedback."
+    "- Do NOT say anything beyond the feedback.\n"
 
     "Output format (REQUIRED): Return string in strictly format as shown below, no extra text.\n"
     "{\"correct\": <true or false>, \"feedback\": <The feedback you have to give as a STRING WITH DOUBLE QUOTED>}\n"
@@ -97,9 +97,10 @@ class InterviewState(TypedDict):
     """State of the interview during the process"""
     user_name: str
     # Initialized during setup
-    questions: Optional[list[Question]]
-    cur_index: Optional[int]
-    num_correct: Optional[int]
+    questions: list[Question]
+    cur_index: int
+    num_correct: int
+    repeat: bool # Whether the LLM repeats the question
 
     # Update during interview
     prev_answer: Optional[str] # The answer to the previous question
@@ -108,13 +109,13 @@ class InterviewState(TypedDict):
 
 load_dotenv()
 # Initialize the LLM and Whisper model
-print("Init the LLM and Whisper...")
+print("Init the LLM...")
 gemini_flash_lite = ChatGoogleGenerativeAI(
     model="gemini-2.0-flash-lite", 
     temperature=0.3, 
     max_retries=2
 )
-print("Init the LLM and Whisper successfully!")
+print("Init the LLM successfully!")
 
 
 # CONVERSATIONAL TOOLS
@@ -125,35 +126,37 @@ def speak(content: str) -> None:
         print(f"Interviewer says: {content}")
         subprocess.run(["say", "-r", "110", content])
     except Exception as e:
-        raise RuntimeError(e)
+        raise RuntimeError(f"Can't speak.\n{e}")
     
 
 def convert_to_answer() -> str:
-    # Record the for 10 seconds.
     # After 10 seconds, candidate is considered not knowing the answer
-    subprocess.run([
-        "ffmpeg",
-        "-y",
-        "-f", "avfoundation",
-        "-i", ":0", # The Macbook recording
-        "-t", "10",
-        "-ar", "16000",
-        "-ac", "1",
-        ANSWER_FILEPATH
-    ])
-    # Inference from the Whisper model
-    subprocess.run([
-        "./whisper.cpp/build/bin/whisper-cli",
-        "-m", "whisper.cpp/models/ggml-base.en.bin",
-        "-f", ANSWER_FILEPATH,
-        "-otxt"
-    ], check=True)
+    try:
+        subprocess.run([
+            "ffmpeg",
+            "-y",
+            "-f", "avfoundation",
+            "-i", ":0", # The Macbook recording
+            "-t", "10", # Record the for 10 seconds
+            "-ar", "16000",
+            "-ac", "1",
+            ANSWER_FILEPATH
+        ])
+        # Inference from the Whisper model
+        subprocess.run([
+            "./whisper.cpp/build/bin/whisper-cli",
+            "-m", "whisper.cpp/models/ggml-base.en.bin",
+            "-f", ANSWER_FILEPATH,
+            "-otxt"
+        ], check=True)
 
-    with open(f"{ANSWER_FILEPATH}.txt") as f:
-        user_answer: str = f.read().strip()
+        with open(f"{ANSWER_FILEPATH}.txt") as f:
+            user_answer: str = f.read().strip()
 
-    print(f"User said: {user_answer}")
-    return user_answer
+        print(f"User said: {user_answer}")
+        return user_answer
+    except Exception as e:
+        raise RuntimeError(f"Can't listen.\n{e}")
 
 
 # DEFINE GRAPH NODES
@@ -170,14 +173,15 @@ def setup_interview(state: InterviewState) -> InterviewState:
             )
             for index in indices:
                 state["questions"].append(question_banks[index])
-    except FileNotFoundError:
-        raise RuntimeError("Questions' source doesn't exist")
-    except json.JSONDecodeError:
-        raise RuntimeError("Questions are stored in invalid format")
+    except FileNotFoundError as f:
+        raise RuntimeError(f"Questions' source doesn't exist.\n{f}")
+    except json.JSONDecodeError as j:
+        raise RuntimeError(f"Questions are stored in invalid format.\n{j}")
 
     # Initialize default values for the state
     state["cur_index"] = 0
     state["num_correct"] = 0
+    state["repeat"] = False
 
     return state
 
@@ -234,17 +238,17 @@ def evaluate_answers(state: InterviewState) -> InterviewState:
         state["cur_index"] += 1
 
         if state["num_correct"] >= 6:
-            # Got at least 6 questions means passing
+            # Answering at least 6 questions correctly means passing
             state["pass_interview"] = True
         elif (
             state["num_correct"] + 
             (len(state["questions"]) - state["cur_index"]) < 6
         ):
-            # User less than 6 questions and ran out of questions
+            # Got less than 6 questions and ran out of questions, means failing
             state["pass_interview"]  = False
     except Exception as e:
-        print(F"Response: {response.content}")
-        raise RuntimeError("Failed to process the LLM response.")
+        print(f"Response: {response.content}")
+        raise RuntimeError(f"Failed to process the LLM response.\n{e}")
     
     speak(json_response["feedback"])
     return state
@@ -254,8 +258,8 @@ def should_continue_interview(state: InterviewState) -> InterviewState:
     """Determine if agent continues after evaluation"""
     if "pass_interview" not in state:
         return "continue_interview"
-    
-    return "end_interview"
+    else:
+        return "end_interview"
 
 
 def conclude_interview(state: InterviewState) -> InterviewState:
@@ -326,6 +330,5 @@ if __name__ == "__main__":
             compiled_graph, 
             interviewee_name=input("Enter you name: ")
         )
-    except Exception as e:
+    except Exception:
         print("INTERVIEW_INTERRUPTION!")
-        print(e)
