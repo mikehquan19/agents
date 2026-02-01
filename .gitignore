@@ -3,3 +3,4 @@
 *.wav
 *.wav.txt
 whisper.cpp
+api/__pycache__/

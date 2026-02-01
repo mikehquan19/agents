@@ -77,14 +77,15 @@ EVALUATE_ANSWER = (
     "Rules:\n"
     "- If the user asks you to repeat, then\n"
     "   - If repeat times < 2, then\n"
-    "       - In the feedback, say that you will repeat the question.\n"
+    "       - Mark this as REPEAT.\n"
+    "       - Feedback: say that you will repeat the question for the nth time.\n"
     "   - Else,\n"
     "       - Mark this as an incorrect answer (NO).\n"
-    "       - In the feedback, say that you can't repeat and have to move on.\n"
+    "       - Feedback: say that you can't repeat and give the right answer (paraphrased if needed)\n"
     "- Else, then\n"
     "   - Compare the interviewee's answer to the correct answer.\n"
     "   - Accept paraphrases and synonyms.\n"
-    "   - Reject answers that are incorrect. However, be slightly lenient\n"
+    "   - Reject answers that are incorrect. However, be lenient\n"
     "   - Give short feedback, guide:\n"
     "       - If they got it right, say that their answer is correct.\n"
     "       - Otherwise, state the comparison from rule 1 using question as context in MAX 2 SENTENCES.\n"
@@ -243,13 +244,14 @@ def evaluate_answers(state: InterviewState) -> InterviewState:
         json_response = json.loads(response.content)
         
         # Update the interview state after evaluation
-        if json["eval"] == "REPEAT" and state["repeat_times"] < 2:
+        if json_response["eval"] == "REPEAT" and state["repeat_times"] < 2:
+            # Agent can repeat question one more time for user
             state["repeat_times"] += 1
         else:
             if json_response["eval"] == "YES":
                 state["num_correct"] += 1
 
-            # Move to next question and reset the repeat times for next question
+            # Move to next question and reset the repeat times for it
             state["cur_index"] += 1
             state["repeat_times"] = 0
 
@@ -261,6 +263,7 @@ def evaluate_answers(state: InterviewState) -> InterviewState:
                 if state["num_correct"] + num_left < 6:
                     # Run out of questions with < 6 correct answers, means failing
                     state["pass_interview"] = False
+                    
     except Exception as e:
         print(f"Response: {response.content}")
         raise RuntimeError(f"Failed to process the LLM response.\n{e}")
@@ -272,9 +275,12 @@ def evaluate_answers(state: InterviewState) -> InterviewState:
 def should_continue_interview(state: InterviewState) -> InterviewState:
     """Determine if agent continues after evaluation"""
     if "pass_interview" not in state:
+        if state["repeat_times"] > 0:
+            return "repeat_question"
+        
         return "continue_interview"
-    else:
-        return "end_interview"
+
+    return "end_interview"
 
 
 def conclude_interview(state: InterviewState) -> InterviewState:
@@ -316,7 +322,8 @@ def construct_graph():
         should_continue_interview,
         {
             "continue_interview": "ask_question",
-            "end_interview": "conclude_interview"
+            "end_interview": "conclude_interview",
+            "repeat_question": "wait_response"
         }
     )
     builder.set_finish_point("conclude_interview")
@@ -336,14 +343,11 @@ def conduct_interview(compiled_graph, interviewee_name: str) -> None:
     })
 
 if __name__ == "__main__":
-    try:
-        compiled_graph = construct_graph()
-        #visualize_graph(compiled_graph)
+    compiled_graph = construct_graph()
+    #visualize_graph(compiled_graph)
 
-        # Start running the interview
-        conduct_interview(
-            compiled_graph, 
-            interviewee_name=input("Enter you name: ")
-        )
-    except Exception:
-        print("INTERVIEW_INTERRUPTION!")
+    # Start running the interview
+    conduct_interview(
+        compiled_graph, 
+        interviewee_name=input("Enter you name: ")
+    )
