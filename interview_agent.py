@@ -8,8 +8,14 @@ import json
 import random
 import subprocess
 
+# Tweak your configuration here
+GEMINI_MODEL="gemini-2.0-flash-lite"
+WHISTER_MODEL="whisper.cpp/models/ggml-base.en.bin"
+LISTENTING_PHASE = 10
 QUESTION_BANKS_FILEPATH = "questions.json"
 ANSWER_FILEPATH = "user_input.wav"
+MAX_REPEAT_TIMES = 2
+MIN_PASS_QUESTIONS = 6
 
 ASK_QUESTIONS: str = (
     "Identity: You are an interviewer named Lucile for the US citizenship interview at the USCIS.\n\n"
@@ -75,20 +81,20 @@ EVALUATE_ANSWER = (
     "- Repeat times\n\n"
 
     "Rules:\n"
-    "- If the user asks you to repeat, then\n"
-    "   - If repeat times < 2, then\n"
+    "- If the user asks you to repeat (they could say \"sorry?\" or the couldn't hear you), then\n"
+    f"   - If repeat times < {MAX_REPEAT_TIMES}, then\n"
     "       - Mark this as REPEAT.\n"
     "       - Feedback: say that you will repeat the question for the nth time.\n"
     "   - Else,\n"
     "       - Mark this as an incorrect answer (NO).\n"
-    "       - Feedback: say that you can't repeat and give the right answer (paraphrased if needed)\n"
+    "       - Feedback: say that you can't repeat and give the right answer.\n"
     "- Else, then\n"
     "   - Compare the interviewee's answer to the correct answer.\n"
     "   - Accept paraphrases and synonyms.\n"
     "   - Reject answers that are incorrect. However, be lenient\n"
     "   - Give short feedback, guide:\n"
     "       - If they got it right, say that their answer is correct.\n"
-    "       - Otherwise, state the comparison from rule 1 using question as context in MAX 2 SENTENCES.\n"
+    "       - Otherwise, give comparison using question as context in MAX 2 SENTENCES.\n"
     "- Be professional, and human natural.\n"
     "- Do NOT explain your reasoning beyond what is required.\n"
     "- Do NOT say anything beyond the feedback.\n"
@@ -123,8 +129,8 @@ load_dotenv()
 # Initialize the LLM and Whisper model
 print("Init the LLM...")
 gemini_flash_lite = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash-lite", 
-    temperature=0.3, 
+    model=GEMINI_MODEL, 
+    temperature=0.4, 
     max_retries=2
 )
 print("Init the LLM successfully!")
@@ -149,7 +155,7 @@ def convert_to_answer() -> str:
             "-y",
             "-f", "avfoundation",
             "-i", ":0", # The Macbook recording
-            "-t", "10", # Record the for 10 seconds
+            "-t", LISTENTING_PHASE, # Record the for a few seconds
             "-ar", "16000",
             "-ac", "1",
             ANSWER_FILEPATH
@@ -157,7 +163,7 @@ def convert_to_answer() -> str:
         # Inference from the Whisper model
         subprocess.run([
             "./whisper.cpp/build/bin/whisper-cli",
-            "-m", "whisper.cpp/models/ggml-base.en.bin",
+            "-m", WHISTER_MODEL,
             "-f", ANSWER_FILEPATH,
             "-otxt"
         ], check=True)
@@ -244,24 +250,24 @@ def evaluate_answers(state: InterviewState) -> InterviewState:
         json_response = json.loads(response.content)
         
         # Update the interview state after evaluation
-        if json_response["eval"] == "REPEAT" and state["repeat_times"] < 2:
+        if json_response["eval"] == "REPEAT" and state["repeat_times"] < MAX_REPEAT_TIMES:
             # Agent can repeat question one more time for user
             state["repeat_times"] += 1
         else:
             if json_response["eval"] == "YES":
                 state["num_correct"] += 1
 
-            # Move to next question and reset the repeat times for it
+            # Move to next question and reset the repeat times
             state["cur_index"] += 1
             state["repeat_times"] = 0
 
-            if state["num_correct"] >= 6:
-                # Answering >= 6 questions correctly means passing
+            if state["num_correct"] >= MIN_PASS_QUESTIONS:
+                # Answering enough questions correctly
                 state["pass_interview"] = True
             else:
                 num_left = len(state["questions"]) - state["cur_index"]
-                if state["num_correct"] + num_left < 6:
-                    # Run out of questions with < 6 correct answers, means failing
+                if state["num_correct"] + num_left < MIN_PASS_QUESTIONS:
+                    # Run out of questions with less than enough correct answers
                     state["pass_interview"] = False
                     
     except Exception as e:
@@ -323,7 +329,7 @@ def construct_graph():
         {
             "continue_interview": "ask_question",
             "end_interview": "conclude_interview",
-            "repeat_question": "wait_response"
+            "repeat_question": "wait_response" # If the user asks for repeat, go back
         }
     )
     builder.set_finish_point("conclude_interview")
