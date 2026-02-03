@@ -34,3 +34,5 @@ class AgentState(TypedDict):
 - Search for any advisory information attached to selected flight
 - Recommend user on they
 - Book the flight or hotel for user
+
+uvicorn api.server:app --reload 

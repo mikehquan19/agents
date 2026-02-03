@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Connect Bank</title>
+
+  <!-- Plaid CDN -->
+  <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+</head>
+
+<body>
+  <h2>Connect your bank</h2>
+  <button id="link-button">Connect</button>
+
+  <script>
+    const button = document.getElementById("link-button");
+
+    async function getLinkToken() {
+      const res = await fetch("http://localhost:8000/link_token", {
+        method: "POST",
+      });
+      const data = await res.json();
+      return data.link_token;
+    }
+
+    async function exchangePublicToken(publicToken) {
+      await fetch("http://localhost:8000/exchange", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          public_token: publicToken,
+        }),
+      });
+    }
+
+    button.onclick = async () => {
+      const linkToken = await getLinkToken();
+
+      const handler = Plaid.create({
+        token: linkToken,
+        onSuccess: async (public_token, metadata) => {
+          console.log("Public token:", public_token);
+          await exchangePublicToken(public_token);
+          alert("Bank connected! You can close this page.");
+        },
+        onExit: (err, metadata) => {
+          if (err) console.error(err);
+        },
+      });
+
+      handler.open();
+    };
+  </script>
+</body>
+
+</html>
