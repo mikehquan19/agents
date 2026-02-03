@@ -41,6 +41,7 @@ class PlaidService:
                 if self.user_id in credentials:
                     self.access_tokens = credentials[self.user_id]
 
+
     # METHODS FOR AUTH 
 
     def create_link_token(self) -> str:
@@ -62,6 +63,7 @@ class PlaidService:
         print(link_response)
         return link_response['link_token']
 
+
     def exchange_for_access_token(self, public_token: str) -> None:
         """Generate the access token from public token"""
         exchange_request = ItemPublicTokenExchangeRequest(
@@ -74,6 +76,7 @@ class PlaidService:
             json.dump({self.user_id: self.access_tokens}, f)
 
         print(exchange_response)
+
 
     # METHODS FOR GETTING THE FINANCIAL DATA
 
@@ -91,6 +94,7 @@ class PlaidService:
 
         return accounts
     
+
     def get_transactions_between(self, start_date: str, end_date: str) -> list:
         "Get list of latest transactions of the user"
         transactions = []
@@ -174,38 +178,4 @@ def exchange_public_for_access(exchange: ExchangeObj):
     return {
         "status": "OK",
         "message": "Access token generated!"
-    }
-
-@app.get("/accounts")
-def get_accounts():
-    try:
-        accounts = plaid_service.get_accounts()
-    except Exception as e:
-        print(f"Unable to get the list of accounts\n{e}")
-        return {
-            "status": "ERROR",
-            "message": "Unable get accounts"
-        }
-    
-    return {
-        "status": "OK",
-        "data": accounts
-    }
-
-@app.get("/transactions")
-def get_transactions():
-    try:
-        transactions = plaid_service.get_transactions_between(
-            "2026-01-01", "2026-02-02"
-        )
-    except Exception as e:
-        print(f"Unable to get the list of transactions\n{e}")
-        return {
-            "status": "ERROR",
-            "message": "Unable get transactions"
-        }
-    
-    return {
-        "status": "OK",
-        "data": transactions
     }
