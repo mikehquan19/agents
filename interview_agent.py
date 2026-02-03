@@ -10,9 +10,11 @@ import subprocess
 
 # Tweak your configuration here
 GEMINI_MODEL="gemini-2.0-flash-lite"
+GEMINI_TEMPERATURE = 0.4
 WHISTER_MODEL="whisper.cpp/models/ggml-base.en.bin"
 LISTENTING_PHASE = 10
 QUESTION_BANKS_FILEPATH = "questions.json"
+NUM_QUESTIONS = 10 # Number of questions asked in the interview
 ANSWER_FILEPATH = "user_input.wav"
 MAX_REPEAT_TIMES = 2
 MIN_PASS_QUESTIONS = 6
@@ -130,7 +132,7 @@ load_dotenv()
 print("Init the LLM...")
 gemini_flash_lite = ChatGoogleGenerativeAI(
     model=GEMINI_MODEL, 
-    temperature=0.4, 
+    temperature=GEMINI_TEMPERATURE, 
     max_retries=2
 )
 print("Init the LLM successfully!")
@@ -145,10 +147,10 @@ def speak(content: str) -> None:
         subprocess.run(["say", "-r", "110", content])
     except Exception as e:
         raise RuntimeError(f"Can't speak.\n{e}")
-    
+
 
 def convert_to_answer() -> str:
-    # After 10 seconds, candidate is considered not knowing the answer
+    # After a few seconds, candidate is considered not knowing the answer
     try:
         subprocess.run([
             "ffmpeg",
@@ -187,7 +189,7 @@ def setup_interview(state: InterviewState) -> InterviewState:
             question_banks: list[dict[str, str]] = json.load(f)
             indices: list[int] = random.sample(
                 range(0, len(question_banks)), 
-                10
+                min(len(question_banks), NUM_QUESTIONS)
             )
             for index in indices:
                 state["questions"].append(question_banks[index])
@@ -230,8 +232,8 @@ def wait_user_response(state: InterviewState) -> InterviewState:
     return state
 
 
-def evaluate_answers(state: InterviewState) -> InterviewState:
-    """Evaluate the user's answers"""
+def evaluate_response(state: InterviewState) -> InterviewState:
+    """Evaluate the user's response"""
     system_prompt = SystemMessage(
         content=EVALUATE_ANSWER
     )
@@ -314,17 +316,17 @@ def construct_graph():
     builder.add_node("setup_interview", setup_interview)
     builder.add_node("ask_question", ask_questions)
     builder.add_node("wait_response", wait_user_response)
-    builder.add_node("judge_answer", evaluate_answers)
+    builder.add_node("evaluate_response", evaluate_response)
     builder.add_node("conclude_interview", conclude_interview)
 
     builder.set_entry_point("setup_interview")
     builder.add_edge("setup_interview", "ask_question")
     builder.add_edge("ask_question", "wait_response")
-    builder.add_edge("wait_response", "judge_answer")
+    builder.add_edge("wait_response", "evaluate_response")
 
     # Interview loop
     builder.add_conditional_edges(
-        "judge_answer",
+        "evaluate_response",
         should_continue_interview,
         {
             "continue_interview": "ask_question",
@@ -350,7 +352,7 @@ def conduct_interview(compiled_graph, interviewee_name: str) -> None:
 
 if __name__ == "__main__":
     compiled_graph = construct_graph()
-    #visualize_graph(compiled_graph)
+    visualize_graph(compiled_graph)
 
     # Start running the interview
     conduct_interview(
