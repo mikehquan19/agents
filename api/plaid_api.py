@@ -2,7 +2,6 @@ import os
 import json
 from dotenv import load_dotenv
 from pydantic import BaseModel
-from datetime import datetime
 import plaid
 from plaid.api.plaid_api import PlaidApi
 from plaid.model.products import Products
@@ -11,13 +10,13 @@ from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUse
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
 from plaid.model.accounts_get_request import AccountsGetRequest
-from plaid.model.transactions_get_request_options import TransactionsGetRequestOptions
-from plaid.model.transactions_get_request import TransactionsGetRequest
+from plaid.model.transactions_sync_request import TransactionsSyncRequest
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
-TOKEN_FILEPATH = "credentials.json"
+TOKEN_FILEPATH = "tokens.json"
+CURSOR_FILEPATH = "cursors.json"
 
 class PlaidService:
     """Service that processes and stores the user id and list of access tokens"""
@@ -34,13 +33,20 @@ class PlaidService:
         self.client = PlaidApi(api_client)
         self.user_id = user_id
         self.access_tokens = []
+        self.item_to_cursor = {} # Map the item_id to cursor
 
+        # Get list of access tokens if any
         if os.path.exists(TOKEN_FILEPATH) and os.path.getsize(TOKEN_FILEPATH) > 0:
             with open(TOKEN_FILEPATH, "r") as f:
-                credentials: dict[str, list[str]] = json.load(f)
+                credentials = json.load(f)
                 if self.user_id in credentials:
                     self.access_tokens = credentials[self.user_id]
 
+        if os.path.exists(CURSOR_FILEPATH) and os.path.getsize(CURSOR_FILEPATH) > 0:
+            with open(CURSOR_FILEPATH, "r") as f:
+                cursors = json.load(f)
+                if self.user_id in cursors:
+                    self.item_to_cursor = cursors[self.user_id]
 
     # METHODS FOR AUTH 
 
@@ -70,20 +76,26 @@ class PlaidService:
             public_token=public_token
         )
         exchange_response = self.client.item_public_token_exchange(exchange_request)
-        self.access_tokens.append(exchange_response["access_token"])
+        self.access_tokens.append((
+            exchange_response["item_id"],
+            exchange_response["access_token"]
+        ))
+        self.item_to_cursor[exchange_response["item_id"]] = None
 
         with open(TOKEN_FILEPATH, "w") as f:
             json.dump({self.user_id: self.access_tokens}, f)
 
-        print(exchange_response)
+        with open(CURSOR_FILEPATH) as f:
+            json.dump({self.user_id: self.item_to_cursor}, f)
 
+        print(exchange_response)
 
     # METHODS FOR GETTING THE FINANCIAL DATA
 
     def get_accounts(self) -> list:
         """Get the list of accounts of the user's institution"""
         accounts = []
-        for acc_tok in self.access_tokens:
+        for _, acc_tok in self.access_tokens:
             # Get the list of account of each of the user's login institution
             acc_request = AccountsGetRequest(
                 access_token=acc_tok
@@ -95,34 +107,29 @@ class PlaidService:
         return accounts
     
 
-    def get_transactions_between(self, start_date: str, end_date: str) -> list:
-        "Get list of latest transactions of the user"
-        transactions = []
+    def sync_transactions_between(self) -> list:
+        "Get list of latest transactions of the user and save it to DB"
+        transactions = {"added": [], "modified": [], "removed": []}
 
-        start=datetime.strptime(start_date, '%Y-%m-%d').date()
-        end=datetime.strptime(end_date, '%Y-%m-%d').date()
-
-        for acc_tok in self.access_tokens:
-            request = TransactionsGetRequest(
-                access_token=acc_tok,
-                start_date=start, end_date=end
-            )
-
-            response = self.client.transactions_get(request).to_dict()
-            transactions += response["transactions"]
-
-            # Since transactions are paginated, call more until everything is added
-            while len(transactions) < response["total_transactions"]:
-                request = TransactionsGetRequest(
+        for item_id, acc_tok in self.access_tokens:
+            # Since transactions are paginated, call more until run out
+            has_more = True
+            while has_more:
+                tran_request = TransactionsSyncRequest(
                     access_token=acc_tok,
-                    start_date=start, end_date=end,
-                    options=TransactionsGetRequestOptions(
-                        offset=len(transactions)
-                    )
+                    cursor=self.item_to_cursor[item_id]
                 )
+                tran_response = self.client.transactions_sync(tran_request)\
+                                .to_dict()
+                for status in transactions.keys():
+                    transactions[status].extend(tran_response[status])
 
-                response = self.client.transactions_get(request).to_dict()
-                transactions += response["transactions"]
+                self.item_to_cursor[item_id] = tran_response["next_cursor"]
+                has_more = tran_response["has_more"]
+
+        # Save the new cursor to the DB (the file for now)
+        with open(CURSOR_FILEPATH) as f:
+            json.dump({self.user_id: self.item_to_cursor}, f)
 
         return transactions
 
@@ -178,4 +185,36 @@ def exchange_public_for_access(exchange: ExchangeObj):
     return {
         "status": "OK",
         "message": "Access token generated!"
+    }
+
+@app.get("/accounts")
+def get_accounts():
+    try:
+        accounts = plaid_service.get_accounts()
+    except Exception as e:
+        print(f"Unable to get the list of accounts\n{e}")
+        return {
+            "status": "ERROR",
+            "message": "Unable get accounts"
+        }
+    
+    return {
+        "status": "OK",
+        "data": accounts
+    }
+
+@app.get("/transactions")
+def get_transactions():
+    try:
+        transactions = plaid_service.sync_transactions_between()
+    except Exception as e:
+        print(f"Unable to sync the list of transactions\n{e}")
+        return {
+            "status": "ERROR",
+            "message": "Unable sync transactions"
+        }
+    
+    return {
+        "status": "OK",
+        "data": transactions
     }
